@@ -13,6 +13,7 @@ static unsigned int attribute_type_to_size(std::string const & type)
     if (type == "VEC3") return 3;
     if (type == "VEC4") return 4;
     return 0;
+    throw std::runtime_error("Unknown attribute type: " + type);
 }
 
 gltf_model load_gltf(std::filesystem::path const & path)
@@ -50,10 +51,10 @@ gltf_model load_gltf(std::filesystem::path const & path)
     {
         auto accessor = document["accessors"].GetArray()[index].GetObject();
         return {
-            parse_buffer_view(accessor["bufferView"].GetInt()),
-            accessor["componentType"].GetUint(),
-            attribute_type_to_size(accessor["type"].GetString()),
-            accessor["count"].GetUint(),
+                parse_buffer_view(accessor["bufferView"].GetInt()),
+                accessor["componentType"].GetUint(),
+                attribute_type_to_size(accessor["type"].GetString()),
+                accessor["count"].GetUint(),
         };
     };
 
@@ -66,29 +67,11 @@ gltf_model load_gltf(std::filesystem::path const & path)
     auto parse_color = [&](auto const & array)
     {
         return glm::vec4{
-            array[0].GetFloat(),
-            array[1].GetFloat(),
-            array[2].GetFloat(),
-            array[3].GetFloat(),
+                array[0].GetFloat(),
+                array[1].GetFloat(),
+                array[2].GetFloat(),
+                array[3].GetFloat(),
         };
-    };
-
-    auto parse_vector = [&](auto const & array)
-    {
-        return glm::vec3{
-            array[0].GetFloat(),
-            array[1].GetFloat(),
-            array[2].GetFloat(),
-        };
-    };
-
-    auto parse_bounds = [&](int index)
-    {
-        auto accessor = document["accessors"].GetArray()[index].GetObject();
-        return std::make_pair(
-            parse_vector(accessor["min"]),
-            parse_vector(accessor["max"])
-        );
     };
 
     for (auto const & mesh : document["meshes"].GetArray())
@@ -105,8 +88,8 @@ gltf_model load_gltf(std::filesystem::path const & path)
         result_mesh.position = parse_accessor(attributes["POSITION"].GetInt());
         result_mesh.normal = parse_accessor(attributes["NORMAL"].GetInt());
         result_mesh.texcoord = parse_accessor(attributes["TEXCOORD_0"].GetInt());
-
-        std::tie(result_mesh.min, result_mesh.max) = parse_bounds(attributes["POSITION"].GetInt());
+        result_mesh.joints = parse_accessor(attributes["JOINTS_0"].GetInt());
+        result_mesh.weights = parse_accessor(attributes["WEIGHTS_0"].GetInt());
 
         auto const & material = document["materials"].GetArray()[primitives[0]["material"].GetInt()];
 
@@ -118,6 +101,119 @@ gltf_model load_gltf(std::filesystem::path const & path)
             result_mesh.material.texture_path = parse_texture(pbr["baseColorTexture"]["index"].GetInt());
         else if (pbr.HasMember("baseColorFactor"))
             result_mesh.material.color = parse_color(pbr["baseColorFactor"].GetArray());
+    }
+
+    auto skins = document["skins"].GetArray();
+    assert(skins.Size() == 1);
+
+    {
+        auto fill_buffer = [&](auto & vector, gltf_model::accessor const & accessor)
+        {
+            assert(accessor.type == 0x1406); // GL_FLOAT
+            using value_type = std::decay_t<decltype(vector[0])>;
+            auto begin = reinterpret_cast<value_type const *>(result.buffer.data() + accessor.view.offset);
+            vector.assign(begin, begin + accessor.count);
+        };
+
+        auto fix_rotations = [](std::vector<glm::quat> & rotations)
+        {
+            for (auto & r : rotations)
+                r = glm::quat(r.z, r.w, r.x, r.y);
+        };
+
+        auto joints = skins[0]["joints"].GetArray();
+
+        std::vector<glm::mat4> inverse_bind_matrices(joints.Size());
+        fill_buffer(inverse_bind_matrices, parse_accessor(skins[0]["inverseBindMatrices"].GetInt()));
+
+        result.bones.resize(joints.Size());
+
+        std::unordered_map<int, int> bone_node_to_index;
+        for (int i = 0; i < joints.Size(); ++i)
+        {
+            int const node_id = joints[i].GetInt();
+            bone_node_to_index[node_id] = i;
+            result.bones[i].name = document["nodes"].GetArray()[node_id]["name"].GetString();
+            result.bones[i].inverse_bind_matrix = inverse_bind_matrices[i];
+        }
+
+        auto nodes = document["nodes"].GetArray();
+
+        for (int i = 0; i < nodes.Size(); ++i)
+        {
+            if (!bone_node_to_index.contains(i)) continue;
+
+            auto const & node = nodes[i];
+
+            if (!node.HasMember("children")) continue;
+
+            for (auto const & child : node["children"].GetArray())
+            {
+                int child_id = child.GetInt();
+                if (bone_node_to_index.contains(child_id))
+                    result.bones[bone_node_to_index.at(child_id)].parent = bone_node_to_index.at(i);
+            }
+        }
+
+        for (int i = 0; i < result.bones.size(); ++i)
+            assert(result.bones[i].parent == -1 || result.bones[i].parent < i);
+
+        for (auto const & animation : document["animations"].GetArray())
+        {
+            std::string name = animation["name"].GetString();
+
+            auto samplers = animation["samplers"].GetArray();
+
+            gltf_model::animation result_animation;
+            result_animation.bones.resize(result.bones.size());
+
+            for (auto const & channel : animation["channels"].GetArray())
+            {
+                int node_id = channel["target"]["node"].GetInt();
+                if (!bone_node_to_index.contains(node_id)) continue;
+
+                auto & bone = result_animation.bones[bone_node_to_index.at(node_id)];
+
+                std::string path = channel["target"]["path"].GetString();
+
+                auto const & sampler = samplers[channel["sampler"].GetInt()];
+
+                auto input = parse_accessor(sampler["input"].GetInt());
+                auto output = parse_accessor(sampler["output"].GetInt());
+
+                if (path == "translation")
+                {
+                    fill_buffer(bone.translation.timestamps, input);
+                    fill_buffer(bone.translation.values, output);
+                }
+                else if (path == "rotation")
+                {
+                    fill_buffer(bone.rotation.timestamps, input);
+                    fill_buffer(bone.rotation.values, output);
+                    fix_rotations(bone.rotation.values);
+                }
+                else if (path == "scale")
+                {
+                    fill_buffer(bone.scale.timestamps, input);
+                    fill_buffer(bone.scale.values, output);
+                }
+            }
+
+            auto update_max_time = [&](std::vector<float> const & timestamps)
+            {
+                for (float t : timestamps)
+                    result_animation.max_time = std::max(result_animation.max_time, t);
+            };
+
+            for (auto const & bone : result_animation.bones)
+            {
+                update_max_time(bone.translation.timestamps);
+                update_max_time(bone.rotation.timestamps);
+                update_max_time(bone.scale.timestamps);
+            }
+
+            result.animations[std::move(name)] = std::move(result_animation);
+        }
     }
 
     return result;

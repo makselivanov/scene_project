@@ -1,0 +1,3 @@
+[submodule "libs/FBXImport"]
+	path = libs/FBXImport
+	url = git@github.com:WinteryFox/FBXImport.git

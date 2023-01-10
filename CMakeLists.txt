@@ -3,10 +3,13 @@ project(project)
 
 cmake_policy(SET CMP0072 NEW)
 cmake_policy(SET CMP0074 NEW)
+add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/libs/FBXImport)
 
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_LIST_DIR}/cmake/modules")
 
 set(CMAKE_CXX_STANDARD 20)
+set(THREADS_PREFER_PTHREAD_FLAG ON)
+find_package(Threads REQUIRED)
 
 include(CMakePrintHelpers)
 
@@ -45,11 +48,14 @@ target_include_directories(${TARGET_NAME} PUBLIC
         "${SDL2_INCLUDE_DIRS}"
         "${GLEW_INCLUDE_DIRS}"
         "${OPENGL_INCLUDE_DIRS}"
+        ${CMAKE_CURRENT_SOURCE_DIR}/libs/FBXImport/importer/include
         )
 target_link_libraries(${TARGET_NAME} PUBLIC
         "${GLEW_LIBRARIES}"
         "${SDL2_LIBRARIES}"
         "${OPENGL_LIBRARIES}"
+        FBXImport
+        Threads::Threads
         )
 target_compile_definitions(${TARGET_NAME} PUBLIC
         -DPROJECT_ROOT="${PROJECT_ROOT}"

@@ -14,6 +14,8 @@
 #include <vector>
 #include <map>
 #include <cmath>
+#include <FBX/FBXImport.h>
+#include <FBX/TriangulateProcess.h>
 
 #define GLM_FORCE_SWIZZLE
 #define GLM_ENABLE_EXPERIMENTAL
@@ -42,7 +44,7 @@ void glew_fail(std::string_view message, GLenum error)
     throw std::runtime_error(to_string(message) + reinterpret_cast<const char *>(glewGetErrorString(error)));
 }
 
-const char vertex_shader_source_sphere[] =
+const char vertex_shader_source_basic[] =
         R"(#version 330 core
 
 uniform mat4 model;
@@ -69,7 +71,7 @@ void main()
 }
 )";
 
-const char fragment_shader_source_sphere[] =
+const char fragment_shader_source_basic[] =
         R"(#version 330 core
 
 uniform vec3 light_direction;
@@ -155,6 +157,34 @@ void main()
     out_color = vec4(texture(enviroment_texture, vec2(x, y)).rgb, 1.0);
 }
 )";
+
+//const char vertex_shader_padoru_source[] =
+//        R"(#version 330 core
+//
+//uniform mat4 model;
+//uniform mat4 view;
+//uniform mat4 projection;
+//
+//layout (location = 0) in vec3 in_position;
+//layout (location = 1) in vec3 in_tangent;
+//layout (location = 2) in vec3 in_normal;
+//layout (location = 3) in vec2 in_texcoord;
+//
+//out vec3 position;
+//out vec3 tangent;
+//out vec3 normal;
+//out vec2 texcoord;
+//
+//void main()
+//{
+//    position = (model * vec4(in_position, 1.0)).xyz;
+//    gl_Position = projection * view * vec4(position, 1.0);
+//    tangent = mat3(model) * in_tangent;
+//    normal = mat3(model) * in_normal;
+//    texcoord = in_texcoord;
+//}
+//)";;
+//const char fragment_shader_padoru_source[] = "";
 
 
 GLuint create_shader(GLenum type, const char * source)
@@ -311,8 +341,8 @@ int main() try
     GLuint array_env;
     glGenVertexArrays(1, &array_env);
 
-    auto vertex_shader_sphere = create_shader(GL_VERTEX_SHADER, vertex_shader_source_sphere);
-    auto fragment_shader_sphere = create_shader(GL_FRAGMENT_SHADER, fragment_shader_source_sphere);
+    auto vertex_shader_sphere = create_shader(GL_VERTEX_SHADER, vertex_shader_source_basic);
+    auto fragment_shader_sphere = create_shader(GL_FRAGMENT_SHADER, fragment_shader_source_basic);
     auto program = create_program(vertex_shader_sphere, fragment_shader_sphere);
 
     GLuint model_location = glGetUniformLocation(program, "model");
@@ -355,6 +385,48 @@ int main() try
     //GLuint albedo_texture = load_texture(project_root + "/textures/brick_albedo.jpg");
     //GLuint normal_texture = load_texture(project_root + "/textures/brick_normal.jpg");
     GLuint environment_texture = load_texture(project_root + "/textures/environment_map.jpg");
+
+    {
+        //load padoru model
+        auto path = project_root + "models/padoru/";
+        const auto &result = FBX::importFile(path, std::set<FBX::Process*>{new FBX::TriangulateProcess()});
+        struct mesh {
+            GLuint vao;
+            std::vector<uint32_t> indices;
+            std::vector<glm::vec3> vector;
+            //FBX::Material material;
+        };
+        std::vector<mesh> meshes;
+        for (const auto &fbxModel : result->models) {
+            auto& cur = meshes.emplace_back();
+            glGenVertexArrays(1, &cur.vao);
+            glBindVertexArray(cur.vao);
+
+            std::vector<glm::vec3> vertices;
+            std::vector<uint32_t> indices;
+
+            vertices.reserve(fbxModel->mesh->vertices.size());
+            for (const auto &v : fbxModel->mesh->vertices)
+                vertices.emplace_back(v.x, v.y, v.z);
+
+            indices.reserve(fbxModel->mesh->indexCount);
+            for (const auto &face : fbxModel->mesh->faces) {
+                if (face.indices.size() != 3) {
+                    continue; // Skip dots and lines, which cannot be triangulated by the triangulation process.
+                }
+                indices.push_back(face[0]);
+                indices.push_back(face[1]);
+                indices.push_back(face[2]);
+            }
+            GLuint texture;
+            glGenTextures(1, &texture);
+            glBindTexture(GL_TEXTURE_2D, texture);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
+            glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, width, height, 0, GL_RGBA, GL_UNSIGNED_BYTE, data);
+            glGenerateMipmap(GL_TEXTURE_2D);
+        }
+    }
 
     auto last_frame_start = std::chrono::high_resolution_clock::now();
 

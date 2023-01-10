@@ -1,0 +1,4 @@
+.idea
+*.zip
+build
+cmake-build-debug

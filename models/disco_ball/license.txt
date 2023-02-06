@@ -1,0 +1,11 @@
+Model Information:
+* title:	Disco ball animated
+* source:	https://sketchfab.com/3d-models/disco-ball-animated-b949297d4ecb48a89ea3544621c999c9
+* author:	SusanKing (https://sketchfab.com/krolzuzannapl)
+
+Model License:
+* license type:	CC-BY-4.0 (http://creativecommons.org/licenses/by/4.0/)
+* requirements:	Author must be credited. Commercial use is allowed.
+
+If you use this 3D model in your project be sure to copy paste this credit wherever you share it:
+This work is based on "Disco ball animated" (https://sketchfab.com/3d-models/disco-ball-animated-b949297d4ecb48a89ea3544621c999c9) by SusanKing (https://sketchfab.com/krolzuzannapl) licensed under CC-BY-4.0 (http://creativecommons.org/licenses/by/4.0/)

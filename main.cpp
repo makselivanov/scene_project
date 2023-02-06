@@ -12,7 +12,6 @@
 #include <iostream>
 #include <fstream>
 #include <chrono>
-#include <utility>
 #include <vector>
 #include <random>
 #include <map>
@@ -27,8 +26,6 @@
 #include <glm/ext/scalar_constants.hpp>
 #include <glm/gtx/quaternion.hpp>
 #include <glm/gtx/string_cast.hpp>
-#include <FBX/FBXImport.h>
-#include <FBX/TriangulateProcess.h>
 
 #include "gltf_loader.hpp"
 #include "stb_image.h"
@@ -69,11 +66,15 @@ out vec4 weights;
 void main()
 {
     mat4x3 average = mat4x3(0);
+    float sum = 0;
     for (int i = 0; i < 4; ++i) {
-        average += bones[in_joints[i]] * in_weights[i];
+        sum += in_weights[i];
+        average += in_weights[i] * bones[in_joints[i]];
     }
+    average /= sum;
     //gl_Position = projection * view * model * (mat4(average) * vec4(in_position, 1.0));
-    gl_Position = projection * view * model * (vec4(in_position, 1.0));
+    gl_Position = projection * view * model * vec4(in_position, 1.0);
+    //normal = mat3(model) * (mat3(average) * in_normal);
     normal = mat3(model) * in_normal;
     weights = in_weights;
     texcoord = in_texcoord;
@@ -91,9 +92,9 @@ uniform vec3 light_direction;
 
 layout (location = 0) out vec4 out_color;
 
+in vec4 weights;
 in vec3 normal;
 in vec2 texcoord;
-in vec4 weights;
 
 void main()
 {
@@ -107,7 +108,6 @@ void main()
     float ambient = 0.4;
     float diffuse = max(0.0, dot(normalize(normal), light_direction));
 
-    //out_color = weights;
     out_color = vec4(albedo_color.rgb * (ambient + diffuse), albedo_color.a);
 }
 )";
@@ -150,6 +150,7 @@ GLuint create_program(Shaders ... shaders)
 
     return result;
 }
+
 
 int main() try
 {
@@ -203,95 +204,73 @@ int main() try
     GLuint bones_location = glGetUniformLocation(program, "bones");
 
     const std::string project_root = PROJECT_ROOT;
-    const std::string model_path = project_root + "/models/padoru/padoru_OT_v2.0_sack.fbx";
+    //const std::string model_path = project_root + "/models/wolf/Wolf-Blender-2.82a.gltf";
+    const std::string model_path = project_root + "/models/padoru_santa_saber_alter/scene.gltf";
 
+    auto const input_model = load_gltf(model_path);
+    GLuint vbo;
+    glGenBuffers(1, &vbo);
+    glBindBuffer(GL_ARRAY_BUFFER, vbo);
+    glBufferData(GL_ARRAY_BUFFER, input_model.buffer.size(), input_model.buffer.data(), GL_STATIC_DRAW);
 
-    const auto &fbx_files = FBX::importFile(model_path, std::set<FBX::Process*>{new FBX::TriangulateProcess()});
-
-    struct fbx_mesh_t {
+    struct mesh
+    {
         GLuint vao;
-        std::shared_ptr<FBX::Material> material;
-        std::vector<uint32_t> indices;
-        fbx_mesh_t(GLuint v, std::shared_ptr<FBX::Material> m, std::vector<uint32_t> i) :
-            vao(v), material(std::move(m)), indices(i) {}
+        gltf_model::accessor indices;
+        gltf_model::material material;
     };
-    std::vector<fbx_mesh_t> fbx_meshes;
 
-    GLuint vbo_padoru[3];
-    glGenBuffers(3, vbo_padoru);
-    GLuint vbo_padoru_vertices = vbo_padoru[0];
-    GLuint vbo_padoru_normals = vbo_padoru[1];
-    GLuint vbo_padoru_texcoord = vbo_padoru[2];
-    GLuint vao_padoru;
-    glGenBuffers(1, &vao_padoru);
-    glBindVertexArray(vao_padoru);
-    //TODO material
+    auto setup_attribute = [](int index, gltf_model::accessor const & accessor, bool integer = false)
+    {
+        glEnableVertexAttribArray(index);
+        if (integer)
+            glVertexAttribIPointer(index, accessor.size, accessor.type, 0, reinterpret_cast<void *>(accessor.view.offset));
+        else
+            glVertexAttribPointer(index, accessor.size, accessor.type, GL_FALSE, 0, reinterpret_cast<void *>(accessor.view.offset));
+    };
+    std::vector<mesh> meshes;
+    for (auto const & mesh : input_model.meshes)
+    {
+        auto & result = meshes.emplace_back();
+        glGenVertexArrays(1, &result.vao);
+        glBindVertexArray(result.vao);
 
-    const auto &fbxModel = fbx_files->models[0];
-    auto& vbo = vbo_padoru;
-    auto& vao = vao_padoru;
-    std::vector<glm::vec3> vertices;
-    std::vector<glm::vec3> normals;
-    std::vector<glm::vec2> texcoord;
-    std::vector<uint32_t> indices;
+        glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, vbo);
+        result.indices = mesh.indices;
 
-    vertices.reserve(fbxModel->mesh->vertices.size());
-    for (const auto &v : fbxModel->mesh->vertices)
-        vertices.emplace_back(v.x, v.y, v.z);
-    glBindBuffer(GL_ARRAY_BUFFER, vbo_padoru_vertices);
-    glBufferData(GL_ARRAY_BUFFER, vertices.size(), vertices.data(), GL_STATIC_DRAW);
-    normals.reserve(fbxModel->mesh->normals.size());
-    for (const auto &v : fbxModel->mesh->normals)
-        normals.emplace_back(v.x, v.y, v.z);
-    glBindBuffer(GL_ARRAY_BUFFER, vbo_padoru_normals);
-    glBufferData(GL_ARRAY_BUFFER, normals.size(), vertices.data(), GL_STATIC_DRAW);
-    texcoord.reserve(fbxModel->mesh->uvs.size());
-    for (const auto &v : fbxModel->mesh->uvs)
-        texcoord.emplace_back(v.x, 1.f - v.y);
-    glBindBuffer(GL_ARRAY_BUFFER, vbo_padoru_texcoord);
-    glBufferData(GL_ARRAY_BUFFER, texcoord.size(), vertices.data(), GL_STATIC_DRAW);
-    indices.reserve(fbxModel->mesh->indexCount);
-    for (const auto &face : fbxModel->mesh->faces) {
-        if (face.indices.size() != 3) {
-            continue; // Skip dots and lines, which cannot be triangulated by the triangulation process.
-        }
-        indices.push_back(face[0]);
-        indices.push_back(face[1]);
-        indices.push_back(face[2]);
+        setup_attribute(0, mesh.position);
+        setup_attribute(1, mesh.normal);
+        setup_attribute(2, mesh.texcoord);
+        setup_attribute(3, mesh.joints, true);
+        setup_attribute(4, mesh.weights);
+
+        result.material = mesh.material;
     }
 
-    glBindBuffer(GL_ARRAY_BUFFER, vbo_padoru_vertices);
-    glEnableVertexAttribArray(0);
-    glVertexAttribIPointer(0, 3, GL_FLOAT, 0, reinterpret_cast<void *>(0));
-    glBindBuffer(GL_ARRAY_BUFFER, vbo_padoru_normals);
-    glEnableVertexAttribArray(1);
-    glVertexAttribIPointer(1, 3, GL_FLOAT, 0, reinterpret_cast<void *>(0));
-    glBindBuffer(GL_ARRAY_BUFFER, vbo_padoru_texcoord);
-    glEnableVertexAttribArray(2);
-    glVertexAttribIPointer(2, 2, GL_FLOAT, 0, reinterpret_cast<void *>(0));
+    std::map<std::string, GLuint> textures;
+    for (auto const & mesh : meshes)
+    {
+        if (!mesh.material.texture_path) continue;
+        if (textures.contains(*mesh.material.texture_path)) continue;
 
-    glBufferData(GL_ARRAY_BUFFER, vertices.size() * sizeof(vertices[0]), vertices.data(), GL_STATIC_DRAW);
-    glBindVertexArray(vao_padoru);
+        auto path = std::filesystem::path(model_path).parent_path() / *mesh.material.texture_path;
 
-    GLuint ebo_padoru;
-    glGenBuffers(1, &ebo_padoru);
-    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, ebo_padoru);
-    glBufferData(GL_ELEMENT_ARRAY_BUFFER, indices.size() * sizeof(indices[0]), indices.data(), GL_STATIC_DRAW);
-    fbx_mesh_t padoru_mesh = fbx_mesh_t(vao_padoru, fbxModel->material, indices);
-    fbx_meshes.emplace_back(padoru_mesh);
+        int width, height, channels;
+        auto data = stbi_load(path.c_str(), &width, &height, &channels, 4);
+        assert(data);
 
-    GLuint padoru_texture;
-    glGenTextures(1, &padoru_texture);
-    auto path = project_root + "/models/padoru/Textures/padoru_atlas.png";
-    int padoru_width, padoru_height, padoru_channels;
-    auto padoru_data = stbi_load(path.c_str(), &padoru_width, &padoru_height, &padoru_channels, 4);
+        GLuint texture;
+        glGenTextures(1, &texture);
+        glBindTexture(GL_TEXTURE_2D, texture);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, width, height, 0, GL_RGBA, GL_UNSIGNED_BYTE, data);
+        glGenerateMipmap(GL_TEXTURE_2D);
 
-    glBindTexture(GL_TEXTURE_2D, padoru_texture);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, padoru_width, padoru_height, 0, GL_RGBA, GL_UNSIGNED_BYTE, padoru_data);
-    glGenerateMipmap(GL_TEXTURE_2D);
-    stbi_image_free(padoru_data);
+        stbi_image_free(data);
+
+        textures[*mesh.material.texture_path] = texture;
+    }
 
     auto last_frame_start = std::chrono::high_resolution_clock::now();
 
@@ -301,14 +280,25 @@ int main() try
 
     float view_angle = glm::pi<float>() / 8.f;
     float camera_distance = 0.75f;
+    float animation_interpolation = 0.5f;
+    float speed = 2.f;
 
     float camera_rotation = glm::pi<float>() * (- 1.f / 3.f);
     float camera_height = 0.25f;
 
     bool paused = false;
-
     bool running = true;
 
+    /*auto ptr_animation = input_model.animations.find("01_Run");
+    if (ptr_animation == input_model.animations.end()) {
+        throw std::runtime_error("Didn't find 01_Run animation.");
+    }
+    auto run_animation = ptr_animation->second;
+    ptr_animation = input_model.animations.find("02_walk");
+    if (ptr_animation == input_model.animations.end()) {
+        throw std::runtime_error("Didn't find 02_walk animation.");
+    }
+    auto walk_animation = ptr_animation->second;*/
 
     while (running)
     {
@@ -346,9 +336,9 @@ int main() try
         if (!paused)
             time += dt;
 
-        if (button_down[SDLK_UP])
+        if (button_down[SDLK_r])
             camera_distance -= 3.f * dt;
-        if (button_down[SDLK_DOWN])
+        if (button_down[SDLK_f])
             camera_distance += 3.f * dt;
 
         if (button_down[SDLK_a])
@@ -360,6 +350,15 @@ int main() try
             view_angle -= 2.f * dt;
         if (button_down[SDLK_s])
             view_angle += 2.f * dt;
+        if (button_down[SDLK_LSHIFT]) {
+            animation_interpolation -= speed * dt;
+            if (animation_interpolation < 0)
+                animation_interpolation = 0;
+        } else {
+            animation_interpolation += speed * dt;
+            if (animation_interpolation > 1)
+                animation_interpolation = 1;
+        }
 
         glClearColor(0.8f, 0.8f, 1.f, 0.f);
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
@@ -370,6 +369,43 @@ int main() try
 
         float near = 0.1f;
         float far = 100.f;
+        float scale = 0.75f + cos(time) * 0.25f;
+
+        std::vector<glm::mat4x3> bones_matrix(input_model.bones.size(), glm::mat4x3(scale));
+        /*
+        std::vector<glm::mat4> transforms(walk_animation.bones.size());
+        for (size_t i = 0; i < run_animation.bones.size(); ++i) {
+            const auto& run_bone = run_animation.bones[i];
+            auto run_animation_time = std::fmod(time, run_animation.max_time);
+            auto run_translation = run_bone.translation(run_animation_time);
+            auto run_rotation = run_bone.rotation(run_animation_time);
+            auto run_scale = run_bone.scale(run_animation_time);
+            const auto& walk_bone = walk_animation.bones[i];
+            auto walk_animation_time = std::fmod(time, walk_animation.max_time);
+            auto walk_translation = walk_bone.translation(walk_animation_time);
+            auto walk_rotation = walk_bone.rotation(walk_animation_time);
+            auto walk_scale = walk_bone.scale(walk_animation_time);
+
+            auto translation = glm::lerp(run_translation, walk_translation, animation_interpolation);
+            auto rotation = glm::slerp(run_rotation, walk_rotation, animation_interpolation);
+            auto scale = glm::lerp(run_scale, walk_scale, animation_interpolation);
+
+            auto glm_translate = glm::translate(glm::mat4(1.f), translation);
+            auto glm_rotation = glm::toMat4(rotation);
+            auto glm_scale = glm::scale(glm::mat4(1.f), scale);
+
+            transforms[i] = glm_translate * glm_rotation * glm_scale;
+            auto parent = input_model.bones[i].parent;
+            if (parent != -1) {
+                transforms[i] = transforms[parent] * transforms[i];
+            }
+
+            bones_matrix[i] = transforms[i];
+        }
+        for (size_t i = 0; i < input_model.bones.size(); ++i) {
+            bones_matrix[i] = bones_matrix[i] * input_model.bones[i].inverse_bind_matrix;
+        }
+        */
 
         glm::mat4 model(1.f);
 
@@ -390,38 +426,47 @@ int main() try
         glUniformMatrix4fv(view_location, 1, GL_FALSE, reinterpret_cast<float *>(&view));
         glUniformMatrix4fv(projection_location, 1, GL_FALSE, reinterpret_cast<float *>(&projection));
         glUniform3fv(light_direction_location, 1, reinterpret_cast<float *>(&light_direction));
-
-        double scale = 0.75 + cos(time) * 0.25;
-        //std::vector<glm::mat4x3> transform(input_model.bones.size(), glm::mat4x3(scale));
-
-        //glUniformMatrix4x3fv(bones_location, 1, GL_FALSE, reinterpret_cast<float *>(&transform));
+        glUniformMatrix4x3fv(bones_location, bones_matrix.size(), GL_FALSE, reinterpret_cast<float *>(bones_matrix.data()));
 
         auto draw_meshes = [&](bool transparent)
         {
-            for (auto const & mesh : fbx_meshes)
+            for (auto const & mesh : meshes)
             {
-                mesh.material->texture;
-                mesh.material->ambient;
-                mesh.material->ambientColor;
-                mesh.material->diffuse;
-                mesh.material->diffuseColor;
-                mesh.material->emissive;
-                mesh.material->emissiveFactor;
-                mesh.material->opacity;
-                mesh.material->reflectivity;
-                mesh.material->shininess;
-                mesh.material->shininessExponent;
-                mesh.material->specular;
-                mesh.material->specularColor;
+                if (mesh.material.transparent != transparent)
+                    continue;
+
+                if (mesh.material.two_sided)
+                    glDisable(GL_CULL_FACE);
+                else
+                    glEnable(GL_CULL_FACE);
+
+                if (transparent)
+                    glEnable(GL_BLEND);
+                else
+                    glDisable(GL_BLEND);
+
+                if (mesh.material.texture_path)
+                {
+                    glBindTexture(GL_TEXTURE_2D, textures[*mesh.material.texture_path]);
+                    glUniform1i(use_texture_location, 1);
+                }
+                else if (mesh.material.color)
+                {
+                    glUniform1i(use_texture_location, 0);
+                    glUniform4fv(color_location, 1, reinterpret_cast<const float *>(&(*mesh.material.color)));
+                }
+                else
+                    continue;
+
                 glBindVertexArray(mesh.vao);
-                glDrawElements(GL_TRIANGLES, mesh.indices.size(), GL_UNSIGNED_INT, 0);
+                glDrawElements(GL_TRIANGLES, mesh.indices.count, mesh.indices.type, reinterpret_cast<void *>(mesh.indices.view.offset));
             }
         };
 
         draw_meshes(false);
-        //glDepthMask(GL_FALSE);
-        //draw_meshes(true);
-        //glDepthMask(GL_TRUE);
+        glDepthMask(GL_FALSE);
+        draw_meshes(true);
+        glDepthMask(GL_TRUE);
 
         SDL_GL_SwapWindow(window);
     }

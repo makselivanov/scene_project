@@ -77,6 +77,8 @@ struct gltf_model
         accessor position;
         accessor normal;
         accessor texcoord;
+
+        bool is_rigged;
         accessor joints;
         accessor weights;
     };

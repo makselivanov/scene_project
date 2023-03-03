@@ -52,6 +52,7 @@ uniform mat4 model;
 uniform mat4 view;
 uniform mat4 projection;
 uniform mat4x3 bones[64];
+uniform int is_rigged;
 
 layout (location = 0) in vec3 in_position;
 layout (location = 1) in vec3 in_normal;
@@ -62,6 +63,7 @@ layout (location = 4) in vec4 in_weights;
 out vec3 normal;
 out vec2 texcoord;
 out vec4 weights;
+out vec3 position;
 
 void main()
 {
@@ -72,10 +74,14 @@ void main()
         average += in_weights[i] * bones[in_joints[i]];
     }
     average /= sum;
-    //gl_Position = projection * view * model * (mat4(average) * vec4(in_position, 1.0));
-    gl_Position = projection * view * model * vec4(in_position, 1.0);
-    //normal = mat3(model) * (mat3(average) * in_normal);
-    normal = mat3(model) * in_normal;
+    if (is_rigged != 0) {
+        gl_Position = projection * view * model * (mat4(average) * vec4(in_position, 1.0));
+        normal = mat3(model) * (mat3(average) * in_normal);
+    } else {
+        gl_Position = projection * view * model * vec4(in_position, 1.0);
+        normal = mat3(model) * in_normal;
+    }
+    position = (model * vec4(in_position, 1.0)).xyz;
     weights = in_weights;
     texcoord = in_texcoord;
 }
@@ -87,13 +93,33 @@ const char fragment_shader_source[] =
 uniform sampler2D albedo;
 uniform vec4 color;
 uniform int use_texture;
+uniform vec3 camera_position;
+
+//uniform float glossiness;
+//uniform float roughness;
+
+in vec3 normal;
+in vec3 position;
+//uniform vec3 point_light_position;
+//uniform vec3 point_light_color;
+//uniform vec3 point_light_attenuation;
+
+/*vec3 diffuse(vec3 direction, vec4 albedo_color) {
+    return albedo_color.xyz * max(0.0, dot(normal, direction));
+}
+
+vec3 specular(vec3 direction, vec4 albedo_color) {
+    float power = 1 / (roughness * roughness) - 1;
+    vec3 view_direction = normalize(camera_position - position);
+    vec3 reflected = 2. * normal * dot(normal, direction) - direction;
+    return glossiness * albedo_color.xyz * pow(max(0.0, dot(reflected, view_direction)), power);
+}*/
 
 uniform vec3 light_direction;
 
 layout (location = 0) out vec4 out_color;
 
 in vec4 weights;
-in vec3 normal;
 in vec2 texcoord;
 
 void main()
@@ -105,10 +131,14 @@ void main()
     else
         albedo_color = color;
 
-    float ambient = 0.4;
-    float diffuse = max(0.0, dot(normalize(normal), light_direction));
+    float ambient = 0.4; //0.4
+    float diffuse_const = max(0.0, dot(normalize(normal), light_direction));
+    //vec3 sun = (diffuse(light_direction, albedo_color) + specular(light_direction, albedo_color)) * vec3(1.f, 0.9f, 0.8f);
+    //float r = distance(position, point_light_position);
+    //vec3 dir = normalize(point_light_position - position);
+    //vec3 source = (diffuse(dir, albedo_color) + specular(dir_albedo_color, albedo_color)) * point_light_color / dot(point_light_attenuation, vec3(1, r, r*r));
 
-    out_color = vec4(albedo_color.rgb * (ambient + diffuse), albedo_color.a);
+    out_color = vec4(albedo_color.rgb * (ambient + diffuse_const), albedo_color.a);
 }
 )";
 
@@ -202,16 +232,21 @@ int main() try
     GLuint use_texture_location = glGetUniformLocation(program, "use_texture");
     GLuint light_direction_location = glGetUniformLocation(program, "light_direction");
     GLuint bones_location = glGetUniformLocation(program, "bones");
+    GLuint camera_position_location = glGetUniformLocation(program, "camera_position");
+    GLuint is_rigged_location = glGetUniformLocation(program, "is_rigged");
+
 
     const std::string project_root = PROJECT_ROOT;
-    //const std::string model_path = project_root + "/models/wolf/Wolf-Blender-2.82a.gltf";
-    const std::string model_path = project_root + "/models/padoru_santa_saber_alter/scene.gltf";
 
-    auto const input_model = load_gltf(model_path);
-    GLuint vbo;
-    glGenBuffers(1, &vbo);
-    glBindBuffer(GL_ARRAY_BUFFER, vbo);
-    glBufferData(GL_ARRAY_BUFFER, input_model.buffer.size(), input_model.buffer.data(), GL_STATIC_DRAW);
+    const int N_MODELS = 2;
+    const std::string model_path[] = {
+            project_root + "/models/padoru_santa_saber_alter/scene.gltf",
+            project_root + "/models/sparrow_-_quirky_series/scene.gltf"
+    };
+    gltf_model const input_model[] = {
+            load_gltf(model_path[0]),
+            load_gltf(model_path[1])
+    };
 
     struct mesh
     {
@@ -220,56 +255,68 @@ int main() try
         gltf_model::material material;
     };
 
-    auto setup_attribute = [](int index, gltf_model::accessor const & accessor, bool integer = false)
-    {
-        glEnableVertexAttribArray(index);
-        if (integer)
-            glVertexAttribIPointer(index, accessor.size, accessor.type, 0, reinterpret_cast<void *>(accessor.view.offset));
-        else
-            glVertexAttribPointer(index, accessor.size, accessor.type, GL_FALSE, 0, reinterpret_cast<void *>(accessor.view.offset));
-    };
-    std::vector<mesh> meshes;
-    for (auto const & mesh : input_model.meshes)
-    {
-        auto & result = meshes.emplace_back();
-        glGenVertexArrays(1, &result.vao);
-        glBindVertexArray(result.vao);
+    GLuint vbo[N_MODELS];
+    glGenBuffers(N_MODELS, vbo);
 
-        glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, vbo);
-        result.indices = mesh.indices;
+    std::vector<mesh> meshes[N_MODELS];
+    std::map<std::string, GLuint> textures[N_MODELS];
 
-        setup_attribute(0, mesh.position);
-        setup_attribute(1, mesh.normal);
-        setup_attribute(2, mesh.texcoord);
-        setup_attribute(3, mesh.joints, true);
-        setup_attribute(4, mesh.weights);
+    for (int idx_model = 0; idx_model < N_MODELS; ++idx_model) {
+        glBindBuffer(GL_ARRAY_BUFFER, vbo[idx_model]);
+        glBufferData(GL_ARRAY_BUFFER, input_model[idx_model].buffer.size(), input_model[idx_model].buffer.data(), GL_STATIC_DRAW);
 
-        result.material = mesh.material;
-    }
+        auto setup_attribute = [](int index, gltf_model::accessor const & accessor, bool integer = false)
+        {
+            glEnableVertexAttribArray(index);
+            if (integer)
+                glVertexAttribIPointer(index, accessor.size, accessor.type, 0, reinterpret_cast<void *>(accessor.view.offset));
+            else
+                glVertexAttribPointer(index, accessor.size, accessor.type, GL_FALSE, 0, reinterpret_cast<void *>(accessor.view.offset));
+        };
 
-    std::map<std::string, GLuint> textures;
-    for (auto const & mesh : meshes)
-    {
-        if (!mesh.material.texture_path) continue;
-        if (textures.contains(*mesh.material.texture_path)) continue;
+        glBindBuffer(GL_ARRAY_BUFFER, vbo[idx_model]);
+        for (auto const & mesh : input_model[idx_model].meshes)
+        {
+            auto & result = meshes[idx_model].emplace_back();
+            glGenVertexArrays(1, &result.vao);
+            glBindVertexArray(result.vao);
 
-        auto path = std::filesystem::path(model_path).parent_path() / *mesh.material.texture_path;
+            glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, vbo[idx_model]);
+            result.indices = mesh.indices;
 
-        int width, height, channels;
-        auto data = stbi_load(path.c_str(), &width, &height, &channels, 4);
-        assert(data);
+            setup_attribute(0, mesh.position);
+            setup_attribute(1, mesh.normal);
+            setup_attribute(2, mesh.texcoord);
+            setup_attribute(3, mesh.joints, true);
+            setup_attribute(4, mesh.weights);
 
-        GLuint texture;
-        glGenTextures(1, &texture);
-        glBindTexture(GL_TEXTURE_2D, texture);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
-        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, width, height, 0, GL_RGBA, GL_UNSIGNED_BYTE, data);
-        glGenerateMipmap(GL_TEXTURE_2D);
+            result.material = mesh.material;
+        }
 
-        stbi_image_free(data);
 
-        textures[*mesh.material.texture_path] = texture;
+        for (auto const & mesh : meshes[idx_model])
+        {
+            if (!mesh.material.texture_path) continue;
+            if (textures[idx_model].contains(*mesh.material.texture_path)) continue;
+
+            auto path = std::filesystem::path(model_path[idx_model]).parent_path() / *mesh.material.texture_path;
+
+            int width, height, channels;
+            auto data = stbi_load(path.c_str(), &width, &height, &channels, 4);
+            assert(data);
+
+            GLuint texture;
+            glGenTextures(1, &texture);
+            glBindTexture(GL_TEXTURE_2D, texture);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
+            glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, width, height, 0, GL_RGBA, GL_UNSIGNED_BYTE, data);
+            glGenerateMipmap(GL_TEXTURE_2D);
+
+            stbi_image_free(data);
+
+            textures[idx_model][*mesh.material.texture_path] = texture;
+        }
     }
 
     auto last_frame_start = std::chrono::high_resolution_clock::now();
@@ -278,27 +325,29 @@ int main() try
 
     std::map<SDL_Keycode, bool> button_down;
 
-    float view_angle = glm::pi<float>() / 8.f;
-    float camera_distance = 0.75f;
+    //float view_angle = glm::pi<float>() / 8.f;
+    //float camera_distance = 3.f;
     float animation_interpolation = 0.5f;
     float speed = 2.f;
 
-    float camera_rotation = glm::pi<float>() * (- 1.f / 3.f);
+    float camera_rotation = 0;
+    glm::vec3 camera_position{0.f, 1.5f, 3.f};
     float camera_height = 0.25f;
 
     bool paused = false;
     bool running = true;
 
-    /*auto ptr_animation = input_model.animations.find("01_Run");
-    if (ptr_animation == input_model.animations.end()) {
-        throw std::runtime_error("Didn't find 01_Run animation.");
+    auto ptr_animation = input_model[1].animations.find("Spin");
+    if (ptr_animation == input_model[1].animations.end()) {
+        throw std::runtime_error("Didn't find Spin animation for bird.");
     }
-    auto run_animation = ptr_animation->second;
-    ptr_animation = input_model.animations.find("02_walk");
-    if (ptr_animation == input_model.animations.end()) {
-        throw std::runtime_error("Didn't find 02_walk animation.");
+    auto spin_bird_animation = ptr_animation->second;
+
+    ptr_animation = input_model[1].animations.find("Idle_A");
+    if (ptr_animation == input_model[1].animations.end()) {
+        throw std::runtime_error("Didn't find Idle_A animation for bird.");
     }
-    auto walk_animation = ptr_animation->second;*/
+    auto idle_a_bird_animation = ptr_animation->second;
 
     while (running)
     {
@@ -333,32 +382,45 @@ int main() try
         float dt = std::chrono::duration_cast<std::chrono::duration<float>>(now - last_frame_start).count();
         last_frame_start = now;
 
+        float camera_move_forward = 0.f;
+        float camera_move_sideways = 0.f;
+
         if (!paused)
             time += dt;
+        {
+            if (button_down[SDLK_w])
+                camera_move_forward -= 3.f * dt;
+            if (button_down[SDLK_s])
+                camera_move_forward += 3.f * dt;
+            if (button_down[SDLK_a])
+                camera_move_sideways -= 3.f * dt;
+            if (button_down[SDLK_d])
+                camera_move_sideways += 3.f * dt;
 
-        if (button_down[SDLK_r])
-            camera_distance -= 3.f * dt;
-        if (button_down[SDLK_f])
-            camera_distance += 3.f * dt;
+            if (button_down[SDLK_LEFT])
+                camera_rotation -= 3.f * dt;
+            if (button_down[SDLK_RIGHT])
+                camera_rotation += 3.f * dt;
 
-        if (button_down[SDLK_a])
-            camera_rotation -= 2.f * dt;
-        if (button_down[SDLK_d])
-            camera_rotation += 2.f * dt;
+            if (button_down[SDLK_f])
+                camera_position.y -= 4.f * dt;
+            if (button_down[SDLK_r])
+                camera_position.y += 4.f * dt;
 
-        if (button_down[SDLK_w])
-            view_angle -= 2.f * dt;
-        if (button_down[SDLK_s])
-            view_angle += 2.f * dt;
-        if (button_down[SDLK_LSHIFT]) {
-            animation_interpolation -= speed * dt;
-            if (animation_interpolation < 0)
-                animation_interpolation = 0;
-        } else {
-            animation_interpolation += speed * dt;
-            if (animation_interpolation > 1)
-                animation_interpolation = 1;
+            if (button_down[SDLK_LSHIFT]) {
+                animation_interpolation += speed * dt;
+                if (animation_interpolation > 1)
+                    animation_interpolation = 1;
+            } else {
+                animation_interpolation -= speed * dt;
+                if (animation_interpolation < 0)
+                    animation_interpolation = 0;
+            }
+
+            camera_position += camera_move_forward * glm::vec3(-std::sin(camera_rotation), 0.f, std::cos(camera_rotation));
+            camera_position += camera_move_sideways * glm::vec3(std::cos(camera_rotation), 0.f, std::sin(camera_rotation));
         }
+
 
         glClearColor(0.8f, 0.8f, 1.f, 0.f);
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
@@ -369,68 +431,39 @@ int main() try
 
         float near = 0.1f;
         float far = 100.f;
-        float scale = 0.75f + cos(time) * 0.25f;
 
-        std::vector<glm::mat4x3> bones_matrix(input_model.bones.size(), glm::mat4x3(scale));
-        /*
-        std::vector<glm::mat4> transforms(walk_animation.bones.size());
-        for (size_t i = 0; i < run_animation.bones.size(); ++i) {
-            const auto& run_bone = run_animation.bones[i];
-            auto run_animation_time = std::fmod(time, run_animation.max_time);
-            auto run_translation = run_bone.translation(run_animation_time);
-            auto run_rotation = run_bone.rotation(run_animation_time);
-            auto run_scale = run_bone.scale(run_animation_time);
-            const auto& walk_bone = walk_animation.bones[i];
-            auto walk_animation_time = std::fmod(time, walk_animation.max_time);
-            auto walk_translation = walk_bone.translation(walk_animation_time);
-            auto walk_rotation = walk_bone.rotation(walk_animation_time);
-            auto walk_scale = walk_bone.scale(walk_animation_time);
-
-            auto translation = glm::lerp(run_translation, walk_translation, animation_interpolation);
-            auto rotation = glm::slerp(run_rotation, walk_rotation, animation_interpolation);
-            auto scale = glm::lerp(run_scale, walk_scale, animation_interpolation);
-
-            auto glm_translate = glm::translate(glm::mat4(1.f), translation);
-            auto glm_rotation = glm::toMat4(rotation);
-            auto glm_scale = glm::scale(glm::mat4(1.f), scale);
-
-            transforms[i] = glm_translate * glm_rotation * glm_scale;
-            auto parent = input_model.bones[i].parent;
-            if (parent != -1) {
-                transforms[i] = transforms[parent] * transforms[i];
-            }
-
-            bones_matrix[i] = transforms[i];
-        }
-        for (size_t i = 0; i < input_model.bones.size(); ++i) {
-            bones_matrix[i] = bones_matrix[i] * input_model.bones[i].inverse_bind_matrix;
-        }
-        */
+        float padoru_turning_angle = time * glm::pi<float>() * 2;
 
         glm::mat4 model(1.f);
 
         glm::mat4 view(1.f);
-        view = glm::translate(view, {0.f, 0.f, -camera_distance});
-        view = glm::rotate(view, view_angle, {1.f, 0.f, 0.f});
+        //view = glm::translate(view, {0.f, 0.f, -camera_distance});
+        //view = glm::rotate(view, view_angle, {1.f, 0.f, 0.f});
         view = glm::rotate(view, camera_rotation, {0.f, 1.f, 0.f});
-        view = glm::translate(view, {0.f, -camera_height, 0.f});
+        view = glm::translate(view, -camera_position);
 
-        glm::mat4 projection = glm::perspective(glm::pi<float>() / 2.f, (1.f * width) / height, near, far);
+        glm::mat4 projection = glm::perspective(
+                glm::pi<float>() / 2.f,
+                (1.f * width) / height, near, far);
 
         glm::vec3 camera_position = (glm::inverse(view) * glm::vec4(0.f, 0.f, 0.f, 1.f)).xyz();
 
         glm::vec3 light_direction = glm::normalize(glm::vec3(1.f, 2.f, 3.f));
 
         glUseProgram(program);
+        glm::mat4 padoru_view = glm::rotate(view, -glm::pi<float>() / 2, {1.f, 0.f, 0.f});
+        padoru_view = glm::rotate(padoru_view, padoru_turning_angle, {0.f, 0.f, 1.f});
+
         glUniformMatrix4fv(model_location, 1, GL_FALSE, reinterpret_cast<float *>(&model));
-        glUniformMatrix4fv(view_location, 1, GL_FALSE, reinterpret_cast<float *>(&view));
+        glUniform1i(is_rigged_location, 0);
+        glUniformMatrix4fv(view_location, 1, GL_FALSE, reinterpret_cast<float *>(&padoru_view));
         glUniformMatrix4fv(projection_location, 1, GL_FALSE, reinterpret_cast<float *>(&projection));
         glUniform3fv(light_direction_location, 1, reinterpret_cast<float *>(&light_direction));
-        glUniformMatrix4x3fv(bones_location, bones_matrix.size(), GL_FALSE, reinterpret_cast<float *>(bones_matrix.data()));
+        glUniform3fv(camera_position_location, 1, (float *) (&camera_position));
 
-        auto draw_meshes = [&](bool transparent)
+        auto draw_meshes = [&](bool transparent, int idx_index)
         {
-            for (auto const & mesh : meshes)
+            for (auto const & mesh : meshes[idx_index])
             {
                 if (mesh.material.transparent != transparent)
                     continue;
@@ -447,7 +480,7 @@ int main() try
 
                 if (mesh.material.texture_path)
                 {
-                    glBindTexture(GL_TEXTURE_2D, textures[*mesh.material.texture_path]);
+                    glBindTexture(GL_TEXTURE_2D, textures[idx_index][*mesh.material.texture_path]);
                     glUniform1i(use_texture_location, 1);
                 }
                 else if (mesh.material.color)
@@ -458,14 +491,94 @@ int main() try
                 else
                     continue;
 
+                //glUniform1f(roughness_location, mesh.material.roughnessFactor);
+                //glUniform1f(glossiness_location, mesh.material.metallicFactor);
+
                 glBindVertexArray(mesh.vao);
-                glDrawElements(GL_TRIANGLES, mesh.indices.count, mesh.indices.type, reinterpret_cast<void *>(mesh.indices.view.offset));
+                glDrawElements(GL_TRIANGLES, mesh.indices.count, mesh.indices.type,
+                               reinterpret_cast<void *>(mesh.indices.view.offset));
             }
         };
 
-        draw_meshes(false);
+        //glBindBuffer(GL_ARRAY_BUFFER, vbo[0]);
+        draw_meshes(false, 0);
         glDepthMask(GL_FALSE);
-        draw_meshes(true);
+        draw_meshes(true, 0);
+        glDepthMask(GL_TRUE);
+
+        //glm::mat4 bird_view(1.f);
+        //glm::mat4 bird_view = view;
+        glm::mat4 bird_view = glm::translate(view, glm::vec3(-3, 0, -1));
+        glUniformMatrix4fv(view_location, 1, GL_FALSE, reinterpret_cast<float *>(&bird_view));
+
+        std::vector<glm::mat4x3> bones_matrix(input_model[1].bones.size(), glm::mat4x3(1));
+        std::vector<glm::mat4> transforms(idle_a_bird_animation.bones.size());
+        /*for (size_t i = 0; i < spin_bird_animation.bones.size(); ++i) {
+            auto& cur_bone = spin_bird_animation.bones[i];
+            std::cout << "Spin bone " << i <<
+                " T: " << cur_bone.translation.values.size() << " R: " << cur_bone.rotation.values.size() <<
+                " S: " << cur_bone.scale.values.size() << '\n';
+            cur_bone = idle_a_bird_animation.bones[i];
+            std::cout << "Idle bone " << i <<
+                      " T: " << cur_bone.translation.values.size() << " R: " << cur_bone.rotation.values.size() <<
+                      " S: " << cur_bone.scale.values.size() << std::endl;
+        }*/
+
+        auto get_or_zero_vector = []<typename T>(gltf_model::spline<T> spline, float time) -> T
+        {
+            if (spline.values.size() == 0)
+                return T();
+            return spline(time);
+        };
+
+        auto get_or_one_vector = []<typename T>(gltf_model::spline<T> spline, float time) -> T
+        {
+            if (spline.values.size() == 0)
+                return T(1);
+            return spline(time);
+        };
+
+
+        for (size_t i = 0; i < spin_bird_animation.bones.size(); ++i) {
+            const auto& cur_bone = spin_bird_animation.bones[i];
+            auto spin_animation_time = std::fmod(time, spin_bird_animation.max_time);
+            auto spin_translation = get_or_zero_vector(cur_bone.translation, spin_animation_time);
+            auto spin_rotation = get_or_zero_vector(cur_bone.rotation, spin_animation_time);
+            auto spin_scale = get_or_one_vector(cur_bone.scale, spin_animation_time);
+
+            const auto& idle_bone = idle_a_bird_animation.bones[i];
+            auto idle_animation_time = std::fmod(time, idle_a_bird_animation.max_time);
+            auto idle_translation = get_or_zero_vector(idle_bone.translation, idle_animation_time);
+            auto idle_rotation = get_or_zero_vector(idle_bone.rotation, idle_animation_time);
+            auto idle_scale = get_or_one_vector(idle_bone.scale, idle_animation_time);
+
+            auto translation = glm::lerp(idle_translation, spin_translation, animation_interpolation);
+            auto rotation = glm::slerp(idle_rotation, spin_rotation, animation_interpolation);
+            auto scale = glm::lerp(idle_scale, spin_scale, animation_interpolation);
+
+            auto glm_translate = glm::translate(glm::mat4(1.f), translation);
+            auto glm_rotation = glm::toMat4(rotation);
+            auto glm_scale = glm::scale(glm::mat4(1.f), scale);
+
+
+            transforms[i] = glm_translate * glm_rotation * glm_scale;
+            auto parent = input_model[1].bones[i].parent;
+            if (parent != -1) {
+                transforms[i] = transforms[parent] * transforms[i];
+            }
+
+            bones_matrix[i] = transforms[i];
+        }
+        for (size_t i = 0; i < input_model[1].bones.size(); ++i) {
+            bones_matrix[i] = bones_matrix[i] * input_model[1].bones[i].inverse_bind_matrix;
+        }
+
+        glUniformMatrix4x3fv(bones_location, bones_matrix.size(), GL_FALSE, reinterpret_cast<float *>(bones_matrix.data()));
+
+        glUniform1i(is_rigged_location, 1);
+        draw_meshes(false, 1);
+        glDepthMask(GL_FALSE);
+        draw_meshes(true, 1);
         glDepthMask(GL_TRUE);
 
         SDL_GL_SwapWindow(window);

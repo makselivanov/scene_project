@@ -44,6 +44,9 @@ gltf_model load_gltf(std::filesystem::path const & path)
     auto parse_buffer_view = [&](int index) -> gltf_model::buffer_view
     {
         auto view = document["bufferViews"].GetArray()[index].GetObject();
+        if (!view.HasMember("byteOffset")) {
+            return {0, view["byteLength"].GetUint()};
+        }
         return {view["byteOffset"].GetUint(), view["byteLength"].GetUint()};
     };
 
@@ -105,6 +108,12 @@ gltf_model load_gltf(std::filesystem::path const & path)
             result_mesh.material.texture_path = parse_texture(pbr["baseColorTexture"]["index"].GetInt());
         else if (pbr.HasMember("baseColorFactor"))
             result_mesh.material.color = parse_color(pbr["baseColorFactor"].GetArray());
+        /*{
+            auto const &metallicFactor = material["metallicFactor"];
+            result_mesh.material.metallicFactor = metallicFactor.GetFloat();
+            auto const &roughnessFactor = material["roughnessFactor"];
+            result_mesh.material.roughnessFactor = roughnessFactor.GetFloat();
+        }*/
     }
 
     if (document.HasMember("skins")) {

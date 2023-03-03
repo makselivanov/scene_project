@@ -36,6 +36,8 @@ struct gltf_model
         bool transparent;
         std::optional<std::string> texture_path;
         std::optional<glm::vec4> color;
+        float metallicFactor;
+        float roughnessFactor;
     };
 
     struct bone

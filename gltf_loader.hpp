@@ -20,6 +20,7 @@ struct gltf_model
     {
         unsigned int offset;
         unsigned int size;
+        unsigned int stride;
     };
 
     struct accessor
@@ -28,6 +29,7 @@ struct gltf_model
         unsigned int type;
         unsigned int size;
         unsigned int count;
+        unsigned int offset;
     };
 
     struct material

@@ -6,7 +6,6 @@
 #endif
 
 #include <GL/glew.h>
-
 #include <string_view>
 #include <stdexcept>
 #include <iostream>
@@ -29,6 +28,8 @@
 
 #include "gltf_loader.hpp"
 #include "stb_image.h"
+
+#define DEBUG
 
 std::string to_string(std::string_view str)
 {
@@ -69,14 +70,14 @@ void main()
 {
     mat4x3 average = mat4x3(0);
     float sum = 0;
-    for (int i = 0; i < 4; ++i) {
+    for (int i = 0; i < 4; ++i) {        //was 4
         sum += in_weights[i];
         average += in_weights[i] * bones[in_joints[i]];
     }
     average /= sum;
     if (is_rigged != 0) {
-        gl_Position = projection * view * model * (mat4(average) * vec4(in_position, 1.0));
-        normal = mat3(model) * (mat3(average) * in_normal);
+        gl_Position = projection * view * model * mat4(average) * vec4(in_position, 1.0);
+        normal = mat3(model) * mat3(average) * in_normal;
     } else {
         gl_Position = projection * view * model * vec4(in_position, 1.0);
         normal = mat3(model) * in_normal;
@@ -181,6 +182,24 @@ GLuint create_program(Shaders ... shaders)
     return result;
 }
 
+glm::vec3 get_or_default_translation(const gltf_model::spline<glm::vec3>& spline, float time) {
+    if (spline.values.empty())
+        return glm::vec3(0);
+    return spline(time);
+};
+
+glm::vec3 get_or_default_scale(const gltf_model::spline<glm::vec3>& spline, float time) {
+    if (spline.values.empty())
+        return glm::vec3(1);
+    return spline(time);
+};
+
+glm::quat get_or_default_rotation(const gltf_model::spline<glm::quat>& spline, float time) {
+    if (spline.values.empty())
+        return {1, 0, 0, 0};
+    return spline(time);
+};
+
 
 int main() try
 {
@@ -269,14 +288,19 @@ int main() try
         {
             glEnableVertexAttribArray(index);
             if (integer)
-                glVertexAttribIPointer(index, accessor.size, accessor.type, 0, reinterpret_cast<void *>(accessor.view.offset));
+                glVertexAttribIPointer(index, accessor.size, accessor.type, accessor.view.stride, reinterpret_cast<void *>(accessor.view.offset + accessor.offset));
             else
-                glVertexAttribPointer(index, accessor.size, accessor.type, GL_FALSE, 0, reinterpret_cast<void *>(accessor.view.offset));
+                glVertexAttribPointer(index, accessor.size, accessor.type, GL_FALSE, accessor.view.stride, reinterpret_cast<void *>(accessor.view.offset + accessor.offset));
         };
+
 
         glBindBuffer(GL_ARRAY_BUFFER, vbo[idx_model]);
         for (auto const & mesh : input_model[idx_model].meshes)
         {
+#ifdef DEBUG
+            std::cout << "Joins of current mesh: \nsize: "
+                << mesh.joints.size << "\ncount: " << mesh.joints.count << "\ntype: " << mesh.joints.type << '\n';
+#endif
             auto & result = meshes[idx_model].emplace_back();
             glGenVertexArrays(1, &result.vao);
             glBindVertexArray(result.vao);
@@ -321,14 +345,14 @@ int main() try
 
     auto last_frame_start = std::chrono::high_resolution_clock::now();
 
-    float time = 0.f;
+    float time = 0.f, start_of_shift = 0.f;
 
     std::map<SDL_Keycode, bool> button_down;
 
     //float view_angle = glm::pi<float>() / 8.f;
     //float camera_distance = 3.f;
-    float animation_interpolation = 0.5f;
-    float speed = 2.f;
+    float animation_interpolation = 0.0f;
+    float speed = 5.f;
 
     float camera_rotation = 0;
     glm::vec3 camera_position{0.f, 1.5f, 3.f};
@@ -369,6 +393,8 @@ int main() try
                     button_down[event.key.keysym.sym] = true;
                     if (event.key.keysym.sym == SDLK_SPACE)
                         paused = !paused;
+                    if (event.key.keysym.sym == SDLK_LSHIFT)
+                        start_of_shift = time;
                     break;
                 case SDL_KEYUP:
                     button_down[event.key.keysym.sym] = false;
@@ -407,15 +433,14 @@ int main() try
             if (button_down[SDLK_r])
                 camera_position.y += 4.f * dt;
 
-            if (button_down[SDLK_LSHIFT]) {
+            if (button_down[SDLK_LSHIFT])
                 animation_interpolation += speed * dt;
-                if (animation_interpolation > 1)
-                    animation_interpolation = 1;
-            } else {
+            else
                 animation_interpolation -= speed * dt;
-                if (animation_interpolation < 0)
-                    animation_interpolation = 0;
-            }
+            if (animation_interpolation > 1)
+                animation_interpolation = 1;
+            if (animation_interpolation < 0)
+                animation_interpolation = 0;
 
             camera_position += camera_move_forward * glm::vec3(-std::sin(camera_rotation), 0.f, std::cos(camera_rotation));
             camera_position += camera_move_sideways * glm::vec3(std::cos(camera_rotation), 0.f, std::sin(camera_rotation));
@@ -508,49 +533,30 @@ int main() try
 
         //glm::mat4 bird_view(1.f);
         //glm::mat4 bird_view = view;
-        glm::mat4 bird_view = glm::translate(view, glm::vec3(-3, 0, -1));
+        glm::mat4 bird_view = glm::translate(view, glm::vec3(-3,  0.5, -1));
+        //bird_view = glm::rotate(bird_view, -glm::pi<float>() / 2, {1.f, 0.f, 0.f});
+
         glUniformMatrix4fv(view_location, 1, GL_FALSE, reinterpret_cast<float *>(&bird_view));
 
         std::vector<glm::mat4x3> bones_matrix(input_model[1].bones.size(), glm::mat4x3(1));
         std::vector<glm::mat4> transforms(idle_a_bird_animation.bones.size());
-        /*for (size_t i = 0; i < spin_bird_animation.bones.size(); ++i) {
-            auto& cur_bone = spin_bird_animation.bones[i];
-            std::cout << "Spin bone " << i <<
-                " T: " << cur_bone.translation.values.size() << " R: " << cur_bone.rotation.values.size() <<
-                " S: " << cur_bone.scale.values.size() << '\n';
-            cur_bone = idle_a_bird_animation.bones[i];
-            std::cout << "Idle bone " << i <<
-                      " T: " << cur_bone.translation.values.size() << " R: " << cur_bone.rotation.values.size() <<
-                      " S: " << cur_bone.scale.values.size() << std::endl;
-        }*/
-
-        auto get_or_zero_vector = []<typename T>(gltf_model::spline<T> spline, float time) -> T
-        {
-            if (spline.values.size() == 0)
-                return T();
-            return spline(time);
-        };
-
-        auto get_or_one_vector = []<typename T>(gltf_model::spline<T> spline, float time) -> T
-        {
-            if (spline.values.size() == 0)
-                return T(1);
-            return spline(time);
-        };
-
 
         for (size_t i = 0; i < spin_bird_animation.bones.size(); ++i) {
             const auto& cur_bone = spin_bird_animation.bones[i];
-            auto spin_animation_time = std::fmod(time, spin_bird_animation.max_time);
-            auto spin_translation = get_or_zero_vector(cur_bone.translation, spin_animation_time);
-            auto spin_rotation = get_or_zero_vector(cur_bone.rotation, spin_animation_time);
-            auto spin_scale = get_or_one_vector(cur_bone.scale, spin_animation_time);
+            auto spin_animation_time = std::fmod(time - start_of_shift, spin_bird_animation.max_time);
+            auto spin_translation = get_or_default_translation(cur_bone.translation, spin_animation_time);
+            auto spin_rotation = get_or_default_rotation(cur_bone.rotation, spin_animation_time);
+            auto spin_scale = get_or_default_scale(cur_bone.scale, spin_animation_time);
 
+            if (i == 0) {
+                spin_translation += glm::vec3(0, -0.5, 0);
+                spin_rotation = glm::rotate(spin_rotation, -glm::pi<float>() / 2, {1.f, 0.f, 0.f});
+            }
             const auto& idle_bone = idle_a_bird_animation.bones[i];
             auto idle_animation_time = std::fmod(time, idle_a_bird_animation.max_time);
-            auto idle_translation = get_or_zero_vector(idle_bone.translation, idle_animation_time);
-            auto idle_rotation = get_or_zero_vector(idle_bone.rotation, idle_animation_time);
-            auto idle_scale = get_or_one_vector(idle_bone.scale, idle_animation_time);
+            auto idle_translation = get_or_default_translation(idle_bone.translation, idle_animation_time);
+            auto idle_rotation = get_or_default_rotation(idle_bone.rotation, idle_animation_time);
+            auto idle_scale = get_or_default_scale(idle_bone.scale, idle_animation_time);
 
             auto translation = glm::lerp(idle_translation, spin_translation, animation_interpolation);
             auto rotation = glm::slerp(idle_rotation, spin_rotation, animation_interpolation);
@@ -561,13 +567,33 @@ int main() try
             auto glm_scale = glm::scale(glm::mat4(1.f), scale);
 
 
-            transforms[i] = glm_translate * glm_rotation * glm_scale;
+            transforms[i] = glm_translate * glm_rotation * glm_scale; //glm_translate * glm_rotation * glm_scale
             auto parent = input_model[1].bones[i].parent;
             if (parent != -1) {
                 transforms[i] = transforms[parent] * transforms[i];
             }
 
             bones_matrix[i] = transforms[i];
+
+#ifdef DEBUG
+            if (i == 2) {
+                std::cout << "Rotation: " << glm::to_string(rotation) << ' '
+                          << glm::to_string(idle_rotation) << ' '
+                          << glm::to_string(spin_rotation) << '\n';
+            }
+//            std::cout << "Cur time: " << time << " " << start_of_shift << "\n";
+/*            std::cout << "Cur bone id: " << i << " name: " << input_model[1].bones[i].name << '\n';
+            std::cout << "Spin animation time: " << spin_animation_time
+                      << " of max time: " << spin_bird_animation.max_time << '\n';
+            std::cout << "Spin bone " <<
+                      " T: " << glm::to_string(spin_translation) << " R: " << glm::to_string(spin_rotation) <<
+                      " S: " << glm::to_string(spin_scale) << "\n";
+            std::cout << "Idle animation time: " << idle_animation_time
+                      << " of max time: " << idle_a_bird_animation.max_time << '\n';
+            std::cout << "Idle bone " <<
+                      " T: " << glm::to_string(idle_translation) << " R: " << glm::to_string(idle_rotation) <<
+                      " S: " << glm::to_string(idle_scale) << "\n";*/
+#endif
         }
         for (size_t i = 0; i < input_model[1].bones.size(); ++i) {
             bones_matrix[i] = bones_matrix[i] * input_model[1].bones[i].inverse_bind_matrix;

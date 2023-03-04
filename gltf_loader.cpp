@@ -5,6 +5,8 @@
 
 #include <fstream>
 #include <stdexcept>
+#include <GL/glew.h>
+
 
 static unsigned int attribute_type_to_size(std::string const & type)
 {
@@ -44,20 +46,29 @@ gltf_model load_gltf(std::filesystem::path const & path)
     auto parse_buffer_view = [&](int index) -> gltf_model::buffer_view
     {
         auto view = document["bufferViews"].GetArray()[index].GetObject();
-        if (!view.HasMember("byteOffset")) {
-            return {0, view["byteLength"].GetUint()};
+        unsigned int offset = 0, stride = 0;
+        if (view.HasMember("byteOffset")) {
+            offset = view["byteOffset"].GetUint();
         }
-        return {view["byteOffset"].GetUint(), view["byteLength"].GetUint()};
+        if (view.HasMember("byteStride")) {
+            stride = view["byteStride"].GetUint();
+        }
+        return {offset, view["byteLength"].GetUint(), stride};
     };
 
     auto parse_accessor = [&](int index) -> gltf_model::accessor
     {
+        unsigned int offset = 0;
         auto accessor = document["accessors"].GetArray()[index].GetObject();
+        if (accessor.HasMember("byteOffset")) {
+            offset = accessor["byteOffset"].GetUint();
+        }
         return {
                 parse_buffer_view(accessor["bufferView"].GetInt()),
                 accessor["componentType"].GetUint(),
                 attribute_type_to_size(accessor["type"].GetString()),
                 accessor["count"].GetUint(),
+                offset,
         };
     };
 
@@ -122,19 +133,31 @@ gltf_model load_gltf(std::filesystem::path const & path)
         {
             auto fill_buffer = [&](auto &vector, gltf_model::accessor const &accessor) {
                 assert(accessor.type == 0x1406); // GL_FLOAT
+                assert(accessor.view.stride == 0 || sizeof(vector[0]) == accessor.view.stride);
                 using value_type = std::decay_t<decltype(vector[0])>;
-                auto begin = reinterpret_cast<value_type const *>(result.buffer.data() + accessor.view.offset);
+                assert(accessor.size == 0 || sizeof(value_type) == sizeof(GLfloat) * accessor.size);
+                //FIXME???
+                auto begin = reinterpret_cast<value_type const *>(result.buffer.data() + accessor.view.offset + accessor.offset);
                 vector.assign(begin, begin + accessor.count);
             };
 
             auto fix_rotations = [](std::vector<glm::quat> &rotations) {
-                for (auto &r: rotations)
+                for (auto &r: rotations) {
                     r = glm::quat(r.z, r.w, r.x, r.y);
+                }
             };
 
             auto joints = skins[0]["joints"].GetArray();
 
             std::vector<glm::mat4> inverse_bind_matrices(joints.Size());
+
+#ifdef DEBUG
+            std::vector<gltf_model::buffer_view> buffers;
+            for (int i = 0; i < 9; ++i) { //9 is ???
+                buffers.push_back(parse_buffer_view(i));
+            }
+#endif
+
             fill_buffer(inverse_bind_matrices, parse_accessor(skins[0]["inverseBindMatrices"].GetInt()));
 
             result.bones.resize(joints.Size());

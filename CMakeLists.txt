@@ -42,7 +42,7 @@ add_executable(${TARGET_NAME} main.cpp
         aabb.cpp
         frustum.hpp
         frustum.cpp
-        )
+        shaders.h shaders.cpp msdf_loader.cpp msdf_loader.h)
 target_include_directories(${TARGET_NAME} PUBLIC
         "${CMAKE_CURRENT_LIST_DIR}/rapidjson/include"
         "${SDL2_INCLUDE_DIRS}"

@@ -15,7 +15,6 @@ static unsigned int attribute_type_to_size(std::string const & type)
     if (type == "VEC3") return 3;
     if (type == "VEC4") return 4;
     return 0;
-    throw std::runtime_error("Unknown attribute type: " + type);
 }
 
 gltf_model load_gltf(std::filesystem::path const & path)
@@ -88,20 +87,38 @@ gltf_model load_gltf(std::filesystem::path const & path)
         };
     };
 
-    for (auto const & mesh : document["meshes"].GetArray())
+    auto parse_vector = [&](auto const & array)
     {
-        auto & result_mesh = result.meshes.emplace_back();
+        return glm::vec3{
+                array[0].GetFloat(),
+                array[1].GetFloat(),
+                array[2].GetFloat(),
+        };
+    };
+
+    auto parse_bounds = [&](int index)
+    {
+        auto accessor = document["accessors"].GetArray()[index].GetObject();
+        return std::make_pair(
+                parse_vector(accessor["min"]),
+                parse_vector(accessor["max"])
+        );
+    };
+
+    for (auto const & mesh : document["meshes"].GetArray()) {
+        auto &result_mesh = result.meshes.emplace_back();
         result_mesh.name = mesh["name"].GetString();
 
         auto primitives = mesh["primitives"].GetArray();
         assert(primitives.Size() == 1);
 
-        auto const & attributes = primitives[0]["attributes"];
+        auto const &attributes = primitives[0]["attributes"];
 
         result_mesh.indices = parse_accessor(primitives[0]["indices"].GetInt());
         result_mesh.position = parse_accessor(attributes["POSITION"].GetInt());
         result_mesh.normal = parse_accessor(attributes["NORMAL"].GetInt());
         result_mesh.texcoord = parse_accessor(attributes["TEXCOORD_0"].GetInt());
+
         result_mesh.is_rigged = false;
         if (attributes.HasMember("JOINTS_0")) {
             result_mesh.is_rigged = true;
@@ -109,22 +126,27 @@ gltf_model load_gltf(std::filesystem::path const & path)
             result_mesh.weights = parse_accessor(attributes["WEIGHTS_0"].GetInt());
         }
 
-        auto const & material = document["materials"].GetArray()[primitives[0]["material"].GetInt()];
+        std::tie(result_mesh.min, result_mesh.max) = parse_bounds(attributes["POSITION"].GetInt());
+
+        auto const &material = document["materials"].GetArray()[primitives[0]["material"].GetInt()];
 
         result_mesh.material.two_sided = material.HasMember("doubleSided") && material["doubleSided"].GetBool();
-        result_mesh.material.transparent = material.HasMember("alphaMode") && (material["alphaMode"].GetString() == std::string("BLEND"));
+        result_mesh.material.transparent =
+                material.HasMember("alphaMode") && (material["alphaMode"].GetString() == std::string("BLEND"));
 
-        auto const & pbr = material["pbrMetallicRoughness"];
+        auto const &pbr = material["pbrMetallicRoughness"];
         if (pbr.HasMember("baseColorTexture"))
             result_mesh.material.texture_path = parse_texture(pbr["baseColorTexture"]["index"].GetInt());
         else if (pbr.HasMember("baseColorFactor"))
             result_mesh.material.color = parse_color(pbr["baseColorFactor"].GetArray());
-        /*{
-            auto const &metallicFactor = material["metallicFactor"];
-            result_mesh.material.metallicFactor = metallicFactor.GetFloat();
-            auto const &roughnessFactor = material["roughnessFactor"];
-            result_mesh.material.roughnessFactor = roughnessFactor.GetFloat();
-        }*/
+
+        //TODO? for metallicRoughness map
+        if (pbr.HasMember("metallicFactor")) {
+            result_mesh.material.metallicFactor = pbr["metallicFactor"].GetFloat();
+        }
+        if (pbr.HasMember("roughnessFactor")) {
+            result_mesh.material.roughnessFactor = pbr["roughnessFactor"].GetFloat();
+        }
     }
 
     if (document.HasMember("skins")) {
@@ -136,7 +158,6 @@ gltf_model load_gltf(std::filesystem::path const & path)
                 assert(accessor.view.stride == 0 || sizeof(vector[0]) == accessor.view.stride);
                 using value_type = std::decay_t<decltype(vector[0])>;
                 assert(accessor.size == 0 || sizeof(value_type) == sizeof(GLfloat) * accessor.size);
-                //FIXME???
                 auto begin = reinterpret_cast<value_type const *>(result.buffer.data() + accessor.view.offset + accessor.offset);
                 vector.assign(begin, begin + accessor.count);
             };
@@ -150,13 +171,6 @@ gltf_model load_gltf(std::filesystem::path const & path)
             auto joints = skins[0]["joints"].GetArray();
 
             std::vector<glm::mat4> inverse_bind_matrices(joints.Size());
-
-#ifdef DEBUG
-            std::vector<gltf_model::buffer_view> buffers;
-            for (int i = 0; i < 9; ++i) { //9 is ???
-                buffers.push_back(parse_buffer_view(i));
-            }
-#endif
 
             fill_buffer(inverse_bind_matrices, parse_accessor(skins[0]["inverseBindMatrices"].GetInt()));
 

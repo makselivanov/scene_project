@@ -82,6 +82,9 @@ struct gltf_model
         accessor normal;
         accessor texcoord;
 
+        glm::vec3 min;
+        glm::vec3 max;
+
         bool is_rigged;
         accessor joints;
         accessor weights;

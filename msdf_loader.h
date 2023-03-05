@@ -1,14 +1,22 @@
-//
-// Created by makar on 05.03.23.
-//
+#pragma once
 
-#ifndef PROJECT_MSDF_LOADER_H
-#define PROJECT_MSDF_LOADER_H
+#include <string>
+#include <unordered_map>
 
+struct msdf_font
+{
+    std::string texture_path;
 
-class msdf_loader {
+    struct glyph
+    {
+        int x, y;
+        int width, height;
+        int xoffset, yoffset;
+        int advance;
+    };
 
+    std::unordered_map<char32_t, glyph> glyphs;
+    float sdf_scale;
 };
 
-
-#endif //PROJECT_MSDF_LOADER_H
+msdf_font load_msdf_font(std::string const & path);
